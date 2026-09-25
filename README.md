@@ -266,6 +266,10 @@ restores the terminal.
 - A second `SIGTERM`, `SIGINT` or `SIGHUP` kills the container at once.
 - If curimata itself is killed with `SIGKILL`, the kernel kills the
   container too. The next `run` or `rm` of that name clears the old state.
+  This includes state that is half written or corrupt, and the systemd
+  scope of the container. State that curimata cannot read for another
+  reason, for example a permission error, stays. `run` and `rm` then fail
+  and name its directory.
 
 ```bash
 curimata run box1 /bin/sleep 600 &
@@ -294,7 +298,7 @@ $XDG_RUNTIME_DIR/curimata/.locks/<name>       # held while a run or rm uses the 
   once with "in use by another curimata process".
 - `curimata rm <name>` deletes a box. It refuses a box that another
   curimata is using. It also clears the state of a container that was
-  stopped by a signal.
+  stopped by a signal (see [Stopping a container](#stopping-a-container)).
 - Programs in a box can create files that belong to a subordinate ID (for
   example apt's `_apt` user). Your host user cannot delete these files
   directly. `curimata rm` deletes them in a user namespace with the same ID
