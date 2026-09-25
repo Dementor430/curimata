@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -185,16 +186,54 @@ func removeBox(stateDirectory, name string) error {
 	return nil
 }
 
+// corruptStateError marks libcontainer state that exists but does not
+// decode into a container.
+type corruptStateError struct{ err error }
+
+func (e *corruptStateError) Error() string { return e.err.Error() }
+func (e *corruptStateError) Unwrap() error { return e.err }
+
+// loadContainer loads the libcontainer state of name. It returns a
+// *corruptStateError for a state.json that does not decode, and for one
+// that decodes but lacks fields that Load uses without a check: runc
+// v1.5.1 panics on "null", "{}" and any state without config.cgroups.
+func loadContainer(stateDirectory, name string) (container *libcontainer.Container, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			container, err = nil, &corruptStateError{fmt.Errorf("libcontainer panicked: %v", recovered)}
+		}
+	}()
+	container, err = libcontainer.Load(stateDirectory, name)
+	var syntaxError *json.SyntaxError
+	var typeError *json.UnmarshalTypeError
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.As(err, &syntaxError) || errors.As(err, &typeError) {
+		return nil, &corruptStateError{err}
+	}
+	return container, err
+}
+
 // clearStoppedContainer removes the libcontainer state of name, if there is
 // any and the container no longer runs. A container that was killed, or
 // whose curimata was killed, leaves this state behind, and the state blocks
-// the name. It reports whether there was state, and refuses a container
-// that still runs.
+// the name. State without state.json, or with a state.json that does not
+// decode, is removed together with its scope. Other state that cannot be
+// read stays, and is an error. It reports whether there was state, and
+// refuses a container that still runs.
 func clearStoppedContainer(stateDirectory, name string) (bool, error) {
-	container, err := libcontainer.Load(stateDirectory, name)
-	if err != nil {
-		// No state, or state that libcontainer cannot read: nothing to do.
-		return false, nil //nolint:nilerr // missing state is the normal case
+	container, err := loadContainer(stateDirectory, name)
+	var corrupt *corruptStateError
+	switch {
+	case errors.Is(err, libcontainer.ErrNotExist):
+		// Usually there is no state at all. A run that was killed between
+		// Create and its first saved state leaves a directory without
+		// state.json.
+		return removeLostState(stateDirectory, name)
+	case errors.As(err, &corrupt):
+		fmt.Fprintf(os.Stderr, "curimata: state of container %q is corrupt: %v\n", name, err)
+		return removeLostState(stateDirectory, name)
+	case err != nil:
+		return true, fmt.Errorf("cannot read state of box %q in %s: %w", name, filepath.Join(stateDirectory, name), err)
 	}
 	status, err := container.Status()
 	if err != nil {
@@ -207,6 +246,29 @@ func clearStoppedContainer(stateDirectory, name string) (bool, error) {
 		return true, fmt.Errorf("clean up state of %q: %w", name, err)
 	}
 	fmt.Fprintf(os.Stderr, "curimata: removed state of stopped container %q\n", name)
+	return true, nil
+}
+
+// removeLostState removes the state directory of name, from which
+// libcontainer cannot load a container, together with the scope that a
+// killed run may have left. It reports whether there was a directory. If
+// the scope cannot be stopped, the directory stays. The caller holds the
+// lock of name.
+func removeLostState(stateDirectory, name string) (bool, error) {
+	directory := filepath.Join(stateDirectory, name)
+	if _, err := os.Lstat(directory); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("check state of %q: %w", name, err)
+	}
+	if err := stopLeftoverScope(name); err != nil {
+		return true, fmt.Errorf("clean up state of %q in %s: %w", name, directory, err)
+	}
+	if err := os.RemoveAll(directory); err != nil {
+		return true, fmt.Errorf("clean up state of %q: %w", name, err)
+	}
+	fmt.Fprintf(os.Stderr, "curimata: removed lost state of container %q\n", name)
 	return true, nil
 }
 

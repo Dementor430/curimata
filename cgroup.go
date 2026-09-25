@@ -9,6 +9,7 @@ import (
 
 	"github.com/opencontainers/cgroups"
 	"github.com/opencontainers/cgroups/devices/config"
+	"github.com/opencontainers/cgroups/manager"
 	"github.com/opencontainers/cgroups/systemd"
 )
 
@@ -119,6 +120,38 @@ func cgroupConfig(name string, resourceLimits limits, devices []*config.Rule) *c
 		cgroup.Resources.CpuQuota = int64(resourceLimits.cpus * cpuPeriodMicroseconds)
 	}
 	return cgroup
+}
+
+// stopLeftoverScope stops the systemd scope of the container name when
+// libcontainer has no usable state for it, so libcontainer cannot destroy
+// it. A run that was killed during start can leave the scope with processes
+// in it. The caller holds the lock of name, so no curimata owns them.
+//
+// It kills every process first. systemd stops a scope with SIGTERM, the
+// container's PID 1 ignores that, and systemd sends SIGKILL only after
+// longer than the 30 seconds that Destroy waits.
+func stopLeftoverScope(name string) error {
+	cgroup := cgroupConfig(name, limits{}, nil)
+	if !cgroup.Systemd {
+		// Without a systemd user session we cannot reach a scope.
+		return nil
+	}
+	cgroupManager, err := manager.New(cgroup)
+	if err != nil {
+		return fmt.Errorf("stop scope of %q: %w", name, err)
+	}
+	if cgroupManager.Exists() {
+		// cgroup.kill also kills processes of subordinate IDs, which this
+		// user cannot signal directly.
+		err := cgroups.WriteFile(cgroupManager.Path(""), "cgroup.kill", "1")
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("kill processes in scope of %q: %w", name, err)
+		}
+	}
+	if err := cgroupManager.Destroy(); err != nil {
+		return fmt.Errorf("stop scope of %q: %w", name, err)
+	}
+	return nil
 }
 
 // hasSystemdUserSession reports whether we can ask a per-user systemd
