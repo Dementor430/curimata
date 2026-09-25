@@ -21,7 +21,7 @@ import (
 // The first run of a name copies the cached image into the box. Later runs
 // with the same name use the box again, so installed packages stay. The
 // image cache itself is never written by a container, and two boxes never
-// share their files.
+// share their files. Only one curimata at a time uses a name: see lockBox.
 //
 //	<data dir>/boxes/<name>/rootfs   the box's root filesystem
 //	<data dir>/boxes/<name>/image    the image reference it was made from
@@ -52,6 +52,9 @@ func boxDir(name string) (string, error) {
 // imageChosen tells whether the user asked for image on the command line
 // or in the policy file. An existing box keeps the image it was made from,
 // so a different chosen image is an error rather than a silent surprise.
+// So is a chosen image for a box without a record of its image.
+//
+// The caller holds the lock of the box name.
 func prepareBox(name, image string, imageChosen, repull bool) (string, error) {
 	directory, err := boxDir(name)
 	if err != nil {
@@ -63,7 +66,10 @@ func prepareBox(name, image string, imageChosen, repull bool) (string, error) {
 	if info, err := os.Stat(rootfs); err == nil && info.IsDir() {
 		recorded, _ := os.ReadFile(imageFile)
 		boxImage := strings.TrimSpace(string(recorded))
-		if imageChosen && boxImage != "" && boxImage != image {
+		if imageChosen && boxImage == "" {
+			return "", fmt.Errorf("box %q has no image record, so it cannot be checked against %s; remove it first with: curimata rm %s", name, image, name)
+		}
+		if imageChosen && boxImage != image {
 			return "", fmt.Errorf("box %q was made from %s, not %s; remove it first with: curimata rm %s", name, boxImage, image, name)
 		}
 		if repull {
@@ -80,13 +86,21 @@ func prepareBox(name, image string, imageChosen, repull bool) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return installBox(name, directory, imageRootfs, image)
+}
 
+// installBox copies imageRootfs into a new box at directory and records
+// image. The caller holds the lock of the box name.
+func installBox(name, directory, imageRootfs, image string) (string, error) {
+	rootfs := filepath.Join(directory, "rootfs")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return "", fmt.Errorf("create box directory: %w", err)
 	}
+	if _, err := os.Lstat(rootfs); err == nil {
+		return "", fmt.Errorf("box %q exists already", name)
+	}
 	// Copy beside the final name, then rename. A failed copy then never
-	// leaves a half-filled box behind, and when two first runs of the same
-	// name race, only one rename wins.
+	// leaves a half-filled box behind.
 	temporary, err := os.MkdirTemp(directory, "rootfs.tmp-")
 	if err != nil {
 		return "", fmt.Errorf("create box directory: %w", err)
@@ -101,21 +115,23 @@ func prepareBox(name, image string, imageChosen, repull bool) (string, error) {
 		}
 		return "", fmt.Errorf("copy image into box %q: %w", name, err)
 	}
+	// Record the image before the box appears. A record without a rootfs
+	// means nothing, and the next run writes it again. A rootfs without a
+	// record would escape the image check.
+	if err := os.WriteFile(filepath.Join(directory, "image"), []byte(image+"\n"), 0o644); err != nil {
+		_ = removeTree(temporary)
+		return "", fmt.Errorf("record image of box %q: %w", name, err)
+	}
 	if err := os.Rename(temporary, rootfs); err != nil {
 		_ = removeTree(temporary)
-		if info, statErr := os.Stat(rootfs); statErr == nil && info.IsDir() {
-			return rootfs, nil
-		}
 		return "", fmt.Errorf("install box %q: %w", name, err)
-	}
-	if err := os.WriteFile(imageFile, []byte(image+"\n"), 0o644); err != nil {
-		return "", fmt.Errorf("record image of box %q: %w", name, err)
 	}
 	fmt.Fprintf(os.Stderr, "curimata: created box %q from %s in %s\n", name, image, time.Since(start).Round(time.Millisecond))
 	return rootfs, nil
 }
 
-// removeBoxes deletes boxes by name. It refuses a box that still runs.
+// removeBoxes deletes boxes by name. It refuses a box that still runs or
+// that another curimata uses.
 func removeBoxes(names []string) error {
 	if len(names) == 0 {
 		return errors.New("rm needs at least one box name")
@@ -128,30 +144,44 @@ func removeBoxes(names []string) error {
 		if err := validateBoxName(name); err != nil {
 			return err
 		}
-
-		foundState, err := clearStoppedContainer(stateDirectory, name)
+		boxLock, err := lockBox(name)
 		if err != nil {
 			return err
 		}
-
-		directory, err := boxDir(name)
+		err = removeBox(stateDirectory, name)
+		boxLock.Close() //nolint:errcheck // releases the lock; nothing was written
 		if err != nil {
 			return err
 		}
-		if _, err := os.Lstat(directory); err != nil {
-			if os.IsNotExist(err) && foundState {
-				continue
-			}
-			if os.IsNotExist(err) {
-				return fmt.Errorf("no box named %q", name)
-			}
-			return err
-		}
-		if err := removeTree(directory); err != nil {
-			return fmt.Errorf("remove box %q: %w", name, err)
-		}
-		fmt.Fprintf(os.Stderr, "curimata: removed box %q\n", name)
 	}
+	return nil
+}
+
+// removeBox deletes one box and the state of its stopped container. The
+// caller holds the lock of name.
+func removeBox(stateDirectory, name string) error {
+	foundState, err := clearStoppedContainer(stateDirectory, name)
+	if err != nil {
+		return err
+	}
+
+	directory, err := boxDir(name)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Lstat(directory); err != nil {
+		if os.IsNotExist(err) && foundState {
+			return nil
+		}
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no box named %q", name)
+		}
+		return err
+	}
+	if err := removeTree(directory); err != nil {
+		return fmt.Errorf("remove box %q: %w", name, err)
+	}
+	fmt.Fprintf(os.Stderr, "curimata: removed box %q\n", name)
 	return nil
 }
 

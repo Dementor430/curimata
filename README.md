@@ -98,7 +98,7 @@ curimata rm <name>...
 | Argument | Meaning |
 |---|---|
 | `rootfs` | Optional. A directory that holds an extracted root file system. curimata uses it **in place**: the container writes into this directory. If you do not give it, the container runs in the box `<name>`. |
-| `name` | The box name. It is also the host name in the container. Only one running container can have a given name. Allowed characters: letters, digits, `.`, `_`, `-`; at most 64 characters. |
+| `name` | The box name. It is also the host name in the container. Only one curimata can use a name at a time: a second `run` or `rm` of the name fails while the first runs. Allowed characters: letters, digits, `.`, `_`, `-`; at most 64 characters. |
 | `command` | Optional. The command to run. The default is `/bin/bash`, or `/bin/sh` if the image has no bash. |
 
 curimata uses the first argument as a rootfs only when it is a directory
@@ -280,6 +280,7 @@ A box is the root file system of one container name:
 $XDG_DATA_HOME/curimata/boxes/<name>/rootfs   # the files of the box
 $XDG_DATA_HOME/curimata/boxes/<name>/image    # the image it was made from
 # default: ~/.local/share/curimata/boxes/...
+$XDG_RUNTIME_DIR/curimata/.locks/<name>       # held while a run or rm uses the name
 ```
 
 - The first `run` of a name copies the cached image into a new box.
@@ -287,8 +288,13 @@ $XDG_DATA_HOME/curimata/boxes/<name>/image    # the image it was made from
   other changes stay.
 - A box keeps the image it was made from. `-image` with a different image
   is refused. Remove the box first.
-- `curimata rm <name>` deletes a box. It refuses a box that is running. It
-  also clears the state of a container that was stopped by a signal.
+- A box without an image record cannot be checked against `-image`, so
+  such a box is refused when you choose an image. Remove it first.
+- While one `run` uses a name, a second `run` or `rm` of that name fails at
+  once with "in use by another curimata process".
+- `curimata rm <name>` deletes a box. It refuses a box that another
+  curimata is using. It also clears the state of a container that was
+  stopped by a signal.
 - Programs in a box can create files that belong to a subordinate ID (for
   example apt's `_apt` user). Your host user cannot delete these files
   directly. `curimata rm` deletes them in a user namespace with the same ID
