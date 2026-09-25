@@ -163,7 +163,9 @@ func hasSystemdUserSession() bool {
 	if os.Getenv("DBUS_SESSION_BUS_ADDRESS") != "" {
 		return true
 	}
-	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
+	// The cgroups library builds the bus address from XDG_RUNTIME_DIR
+	// itself, without the fallback of stateDir, so only the variable counts.
+	if runtimeDir := xdgDir("XDG_RUNTIME_DIR"); runtimeDir != "" {
 		_, err := os.Stat(filepath.Join(runtimeDir, "bus"))
 		return err == nil
 	}
