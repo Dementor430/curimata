@@ -285,6 +285,7 @@ $XDG_DATA_HOME/curimata/boxes/<name>/rootfs   # the files of the box
 $XDG_DATA_HOME/curimata/boxes/<name>/image    # the image it was made from
 # default: ~/.local/share/curimata/boxes/...
 $XDG_RUNTIME_DIR/curimata/.locks/<name>       # held while a run or rm uses the name
+# without XDG_RUNTIME_DIR: /run/user/<uid>, else /tmp/curimata-<uid>
 ```
 
 - The first `run` of a name copies the cached image into a new box.
@@ -327,6 +328,17 @@ $XDG_DATA_HOME/curimata/images/<registry>/<repository>/<tag>/rootfs
 - Digest references (`image@sha256:…`) are not supported.
 
 The container state (not the images) is in `$XDG_RUNTIME_DIR/curimata/`.
+If `XDG_RUNTIME_DIR` is not set, curimata uses `/run/user/<uid>`, or
+`/tmp/curimata-<uid>` with a warning. curimata ignores a relative
+`XDG_DATA_HOME` or `XDG_RUNTIME_DIR`, with a warning. The state directory
+must not be inside the data directory, and the data directory must not be
+inside the state directory.
+
+**Upgrade note.** Earlier versions kept the container state in
+`~/.local/share/curimata/` when `XDG_RUNTIME_DIR` was not set. Stop all
+`curimata run` processes before the upgrade. After the upgrade, delete
+`~/.local/share/curimata/.locks` and each `~/.local/share/curimata/<name>/`
+that holds a `state.json`. Do not delete `boxes/`, `images/` or `logs/`.
 
 ## How it works
 
@@ -370,8 +382,9 @@ curimata run ──── starts ──────────▶ your command 
   `curl` or GNU `wget`.
 - **Few commands.** There are only `run` and `rm`. There is no `list`,
   `stop` or `exec`.
-- **State directory fallback.** If `XDG_RUNTIME_DIR` is not set, the
-  container state goes into the same directory as the image cache.
+- **State in /tmp.** Without `XDG_RUNTIME_DIR` and `/run/user/<uid>`, the
+  container state is in `/tmp/curimata-<uid>`. If `/tmp` is not cleared at
+  boot, old state stays. The next `run` or `rm` of the name removes it.
 
 ## Development
 
