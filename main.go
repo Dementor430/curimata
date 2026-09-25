@@ -146,6 +146,8 @@ type runOptions struct {
 	command        []string
 	// allow is nil when no rule was given: the container gets no network.
 	allow *allowlist
+	// boxLock holds the lock of name until curimata exits.
+	boxLock *os.File
 }
 
 func startAgentEnvironment(commandLineArgs []string) (int, error) {
@@ -153,6 +155,9 @@ func startAgentEnvironment(commandLineArgs []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Deferred first, so it runs last: the name stays locked until every
+	// other cleanup, including the container state, is done.
+	defer options.boxLock.Close() //nolint:errcheck // the lock only has to last until here
 
 	// The helper must exist before the container config is built: the
 	// container joins the helper's namespaces by path.
@@ -290,7 +295,7 @@ func parseRunArgs(commandLineArgs []string) (*runOptions, error) {
 	}
 
 	imageChosen := given["image"] || (policyFile != nil && policyFile.Image != "")
-	options.rootfs, positionalArgs, err = resolveRootfs(positionalArgs, image, imageChosen, repull)
+	options.rootfs, positionalArgs, options.boxLock, err = resolveRootfs(positionalArgs, image, imageChosen, repull)
 	if err != nil {
 		return nil, err
 	}
@@ -304,6 +309,7 @@ func parseRunArgs(commandLineArgs []string) (*runOptions, error) {
 
 	options.allow, err = loadAllowlist(allowArgs, policyFile)
 	if err != nil {
+		options.boxLock.Close() //nolint:errcheck // the allowlist error is the useful one
 		return nil, err
 	}
 	return &options, nil
@@ -330,25 +336,38 @@ func warnFlagAfterName(flagSet *flag.FlagSet, name string, command []string) {
 // one. That directory is used in place. Otherwise the first argument is the
 // container name, and the container runs in the box of that name, which is
 // made from the image on the first run.
-func resolveRootfs(positionalArgs []string, image string, imageChosen, repull bool) (string, []string, error) {
+//
+// It also returns the lock of the container name, taken before the box is
+// touched. The caller holds it until curimata exits.
+func resolveRootfs(positionalArgs []string, image string, imageChosen, repull bool) (string, []string, *os.File, error) {
 	if len(positionalArgs) >= 2 && looksLikeRootfs(positionalArgs[0]) {
 		if err := validateBoxName(positionalArgs[1]); err != nil {
-			return "", nil, err
+			return "", nil, nil, err
+		}
+		boxLock, err := lockBox(positionalArgs[1])
+		if err != nil {
+			return "", nil, nil, err
 		}
 		absolutePath, err := filepath.Abs(positionalArgs[0])
 		if err != nil {
-			return "", nil, fmt.Errorf("resolve rootfs: %w", err)
+			boxLock.Close() //nolint:errcheck // the path error is the useful one
+			return "", nil, nil, fmt.Errorf("resolve rootfs: %w", err)
 		}
-		return absolutePath, positionalArgs[1:], nil
+		return absolutePath, positionalArgs[1:], boxLock, nil
 	}
 	if err := validateBoxName(positionalArgs[0]); err != nil {
-		return "", nil, err
+		return "", nil, nil, err
+	}
+	boxLock, err := lockBox(positionalArgs[0])
+	if err != nil {
+		return "", nil, nil, err
 	}
 	boxRootfs, err := prepareBox(positionalArgs[0], image, imageChosen, repull)
 	if err != nil {
-		return "", nil, err
+		boxLock.Close() //nolint:errcheck // the box error is the useful one
+		return "", nil, nil, err
 	}
-	return boxRootfs, positionalArgs, nil
+	return boxRootfs, positionalArgs, boxLock, nil
 }
 
 // createContainer builds the container config and registers the container
