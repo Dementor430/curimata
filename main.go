@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	// To enable device management code, import cgroups/devices package.
@@ -100,8 +101,8 @@ func printUsage() {
 	fmt.Println("  -config <path>  JSON policy file; flags win, allow rules add up")
 	fmt.Println("  -memory <MiB>   memory limit; 0 means no limit")
 	fmt.Println("  -pids <n>       maximum number of processes; 0 means no limit")
-	fmt.Println("  -cpus <n>       CPU cores the container may use; 0 means no limit")
-	fmt.Println("  -no-systemd     manage cgroups directly, without a systemd scope")
+	fmt.Println("  -cpus <n>       CPU cores, 0.01 up to the host's count; 0 means no limit")
+	fmt.Println("  -no-systemd     no systemd scope; limits are then refused")
 	fmt.Println()
 	fmt.Println("curimata rm <name>...  Delete boxes and their files")
 }
@@ -279,6 +280,13 @@ func parseRunArgs(commandLineArgs []string) (*runOptions, error) {
 	if len(positionalArgs) == 0 {
 		printUsage()
 		return nil, errors.New("run needs a container name")
+	}
+
+	if err := options.resourceLimits.check(runtime.NumCPU()); err != nil {
+		return nil, err
+	}
+	if err := options.resourceLimits.requireScope(options.resourceLimits.systemdScope()); err != nil {
+		return nil, err
 	}
 
 	imageChosen := given["image"] || (policyFile != nil && policyFile.Image != "")
