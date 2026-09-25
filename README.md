@@ -113,10 +113,10 @@ name.
 | `-pull` | off | Download the image again, also when it is in the cache. An existing box keeps its files. |
 | `-allow <rule>` | none | Allow outbound connections. You can use it more than once. See [Network allowlist](#network-allowlist). |
 | `-config <path>` | none | A JSON policy file. See [Policy file](#policy-file). |
-| `-memory <MiB>` | `0` (no limit) | Memory limit in MiB. Swap is not allowed above this limit. |
-| `-pids <n>` | `0` (no limit) | Maximum number of processes. |
-| `-cpus <n>` | `0` (no limit) | CPU cores, for example `1.5`. |
-| `-no-systemd` | off | Do not use a systemd scope. The limits then have no effect. |
+| `-memory <MiB>` | `0` (no limit) | Memory limit in MiB. Swap is not allowed above this limit. Negative values are refused. |
+| `-pids <n>` | `0` (no limit) | Maximum number of processes. Negative values are refused. |
+| `-cpus <n>` | `0` (no limit) | CPU cores, for example `1.5`. From `0.01` up to the number of CPUs on the host. |
+| `-no-systemd` | off | Do not use a systemd scope. You cannot set limits with this flag. |
 
 ### Examples
 
@@ -249,8 +249,8 @@ systemctl --user status curimata-box3.scope
 ```
 
 > **Important:** If there is no systemd user session, or if you use
-> `-no-systemd`, the container starts but the limits **have no effect**.
-> curimata does not show a warning.
+> `-no-systemd`, curimata refuses to start a container with limits. It
+> tells you why.
 
 ## Stopping a container
 
@@ -351,7 +351,8 @@ curimata run ──── starts ──────────▶ your command 
 - **A box is a full copy.** Each box needs the disk space of its image.
   curimata does not use overlayfs, because a rootless overlay mount does not
   fit into the way libcontainer mounts the root file system.
-- **Limits without systemd.** See [Resource limits](#resource-limits).
+- **Limits need systemd.** Without a systemd user session, you cannot set
+  limits. See [Resource limits](#resource-limits).
 - **No DNS in the container.** Only programs that use the proxy can resolve
   names. The proxy resolves names on the host.
 - **BusyBox `wget` and HTTPS.** BusyBox `wget` (Alpine) sends

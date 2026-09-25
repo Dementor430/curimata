@@ -60,8 +60,9 @@ func containerConfig(rootfs, name string, resourceLimits limits, namespaceHolder
 
 		// We run as an unprivileged user. RootlessEUID makes libcontainer
 		// bind-mount the host device nodes instead of calling mknod, which
-		// only real root may do. RootlessCgroups makes it tolerate the
-		// cgroup writes that this user is not allowed to perform.
+		// only real root may do. RootlessCgroups lets it continue without a
+		// cgroup when it may not create one; it still fails on any memory,
+		// pids or CPU limit that it cannot write.
 		RootlessEUID:    true,
 		RootlessCgroups: true,
 
